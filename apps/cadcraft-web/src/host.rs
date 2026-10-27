@@ -1,19 +1,31 @@
-//! The `postMessage` bridge to a same-origin parent page (`?host=parent`), for pages that embed
-//! CADCraft in an `<iframe>` (such as a Nextcloud app). Messages are plain objects with a `type`:
+//! The OneOS host bridge: `postMessage` to the ONE parent the frame page declared. The frame page's loader
+//! (`bootstrap.js`) sets `globalThis.__craftHost = {app, version, parent}` from the page's `data-parent`; the editor
+//! lives on its own origin, so the parent is a DIFFERENT origin. Messages go to that origin only, and only the parent
+//! window on that origin is heard. Every message is a plain object with a `type`; `session` is the per-open nonce the
+//! host mints in `craft:open` and every later message echoes
+//! (`plans/mona/craft-integration-design-2026-10-25.md` section 2.2):
 //!
-//! - `cadcraft:ready` (to the parent): `{ version }`, the app is listening; send a drawing now.
-//! - `cadcraft:open` (from the parent): `{ name, bytes }`, bytes an `ArrayBuffer` or
-//!   `Uint8Array`. It opens like a file picked with File › Open or dropped on the window.
-//! - `cadcraft:save` (to the parent): `{ name, bytes }` (a transferred `ArrayBuffer`) for every
-//!   file CADCraft would otherwise download (SAVE, SAVEAS, exports): it replaces the engine's
-//!   delivery hook. The parent stores the file and reports failures itself.
-//! - `cadcraft:dirty` (to the parent): `{ dirty }` whenever unsaved changes appear or go away.
-//! - `cadcraft:failed` (to the parent): `{ error }` when the app couldn't start.
+//! - `craft:ready {app, version}` (to the parent): listening; send the file now.
+//! - `craft:open {session, name, mime, bytes, versionId, readOnly, collab}` (from the parent): open these bytes (a DXF or a DWG).
+//! - `craft:save {session, name, mime, bytes, baseVersionId, saveAs}` (to the parent): the person saved. The bytes are a
+//!   transferred `ArrayBuffer`; the host makes a NEW version of the file through the compare-and-set and answers
+//!   `craft:saved {session, versionId}` (the next save's base) or `craft:refused {session, code, reason}`. Anything that is not the
+//!   opened file under its own name (an export to SVG, PNG or PDF, a Save As) goes as `saveAs: true`, a copy, never a new version
+//!   of the opened file.
+//! - `craft:dirty {session, dirty}` (to the parent): unsaved changes appeared or went away.
+//! - `craft:failed {error}` (to the parent): the editor could not start.
+//! - `craft:opened {session}` / `craft:view {session, scrollTop, scrollHeight, clientHeight, selection ...}` / `craft:viewed {session}`:
+//!   the progressive open's hand-over (`handoff.rs`).
+//! - `craft:command {session, id, method: "command.batch", params: {label, steps: [{name, args?}]}}` (from the parent) is the
+//!   assistant's allow-listed run (`cadcraft_engine::host_commands`): all of it as ONE undo step, or none of it. It is answered
+//!   `craft:result {session, id, ok:true, result}` or `{ok:false, error: "<code>: <reason>"}` (a command outside the list, a step the
+//!   drawing forbids, a file open read-only, or a `session` that is not the open one).
 //!
-//! Only the parent window on the page's own origin is heard or answered. In host mode the app
-//! starts on the Start tab rather than an empty Drawing1, and the parent guards leaving the page.
+//! The editor never talks to a server of its own: there is no network call in this module, and the drawing's bytes arrive and leave
+//! only as these messages. A file opened read-only is never saved (the save fails by name).
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use cadcraft_ui_egui::CadApp;
 use wasm_bindgen::JsCast as _;
@@ -24,6 +36,23 @@ use web_sys::js_sys;
 /// Longest file name taken from the parent page.
 const MAX_NAME_CHARS: usize = 255;
 
+/// What the host's last `craft:open` said.
+#[derive(Default)]
+struct Opened {
+    session: String,
+    name: String,
+    version_id: String,
+    read_only: bool,
+}
+
+/// An assistant run the host relayed, waiting for the next frame.
+pub struct Run {
+    pub id: f64,
+    pub params: serde_json::Value,
+}
+
+pub type Runs = Rc<RefCell<Vec<Run>>>;
+
 thread_local! {
     /// The bridge [`deliver`] posts through (the engine's hook is a plain `fn`).
     static BRIDGE: RefCell<Option<Bridge>> = const { RefCell::new(None) };
@@ -33,23 +62,42 @@ thread_local! {
 pub struct Bridge {
     window: web_sys::Window,
     parent: web_sys::Window,
+    /// The declared parent origin: the only target and the only sender.
     origin: String,
+    app: String,
+    version: String,
+    opened: Rc<RefCell<Opened>>,
 }
 
 /// The unsaved-changes state last reported to the parent.
 #[derive(Default)]
-pub struct DirtyReport(Cell<Option<bool>>);
+pub struct DirtyReport(Cell<Option<(String, bool)>>);
+
+/// `scheme://host[:port]` exactly: https, or http only on localhost (the dev estate).
+fn plain_origin(v: &str) -> bool {
+    let Some((scheme, rest)) = v.split_once("://") else { return false };
+    let local = rest == "localhost" || rest.starts_with("localhost:") || rest.starts_with("127.0.0.1");
+    (scheme == "https" || (scheme == "http" && local)) && !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'))
+}
 
 impl Bridge {
-    /// `None` when the page isn't framed (there is no parent to talk to).
+    /// `None` when the page is not framed, or declares no parent origin.
     pub fn new() -> Option<Self> {
         let window = web_sys::window()?;
         let parent = window.parent().ok().flatten()?;
         if js_sys::Object::is(&parent, &window) {
             return None;
         }
-        let origin = window.location().origin().ok()?;
-        Some(Self { window, parent, origin })
+        let declared = js_sys::Reflect::get(&window, &JsValue::from_str("__craftHost")).ok().filter(|d| d.is_object())?;
+        let origin = string(&declared, "parent").filter(|o| plain_origin(o))?;
+        Some(Self {
+            window,
+            parent,
+            origin,
+            app: string(&declared, "app").unwrap_or_else(|| "cad".into()),
+            version: string(&declared, "version").unwrap_or_else(|| env!("CARGO_PKG_VERSION").into()),
+            opened: Rc::default(),
+        })
     }
 
     /// Make this the bridge [`deliver`] uses.
@@ -57,37 +105,134 @@ impl Bridge {
         BRIDGE.with(|b| *b.borrow_mut() = Some(self.clone()));
     }
 
+    fn post(&self, message: &js_sys::Object, transfer: Option<&JsValue>) -> Result<(), String> {
+        let sent = match transfer {
+            Some(t) => self.parent.post_message_with_transfer(message, &self.origin, &js_sys::Array::of1(t)),
+            None => self.parent.post_message(message, &self.origin),
+        };
+        sent.map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))
+    }
+
     pub fn post_ready(&self) {
-        self.send(&[("type", "cadcraft:ready".into()), ("version", env!("CARGO_PKG_VERSION").into())]);
+        if let Some(m) = message(&[("type", "craft:ready".into()), ("app", self.app.as_str().into()), ("version", self.version.as_str().into())]) {
+            let _ = self.post(&m, None);
+        }
     }
 
+    /// `craft:opened {session}`: the drawing is loaded and drawn, the editor takes input (handoff.rs).
+    pub fn post_opened(&self) {
+        let session = self.opened.borrow().session.clone();
+        if let Some(m) = message(&[("type", "craft:opened".into()), ("session", session.as_str().into())]) {
+            let _ = self.post(&m, None);
+        }
+    }
+
+    /// `craft:viewed {session}`: the first view's place is applied and drawn; the host may let the first view go.
+    pub fn post_viewed(&self) {
+        let session = self.opened.borrow().session.clone();
+        if let Some(m) = message(&[("type", "craft:viewed".into()), ("session", session.as_str().into())]) {
+            let _ = self.post(&m, None);
+        }
+    }
+
+    /// The app couldn't start (no WebGL, for example): let the parent say so.
     pub fn post_failed(&self, error: &str) {
-        self.send(&[("type", "cadcraft:failed".into()), ("error", error.into())]);
+        if let Some(m) = message(&[("type", "craft:failed".into()), ("error", error.into())]) {
+            let _ = self.post(&m, None);
+        }
     }
 
-    /// Hear drawings from the parent; they arrive through the upload inbox.
-    pub fn listen(&self, inbox: crate::upload::Inbox) {
-        let parent = self.parent.clone();
-        let origin = self.origin.clone();
+    /// `craft:result {session, id, ok, result|error}` to the parent.
+    pub fn post_result(&self, id: f64, outcome: Result<serde_json::Value, String>) {
+        let session = self.opened.borrow().session.clone();
+        let mut fields: Vec<(&str, JsValue)> =
+            vec![("type", "craft:result".into()), ("session", session.as_str().into()), ("id", id.into()), ("ok", outcome.is_ok().into())];
+        match &outcome {
+            Ok(value) => {
+                let result = js_sys::JSON::parse(&value.to_string()).unwrap_or(JsValue::NULL);
+                fields.push(("result", result));
+            }
+            Err(error) => fields.push(("error", error.as_str().into())),
+        }
+        if let Some(m) = message(&fields) {
+            let _ = self.post(&m, None);
+        }
+    }
+
+    /// Hear the host: `craft:open` queues the file like a picked one; `craft:saved` and `craft:refused` answer a save;
+    /// `craft:command` queues an assistant run.
+    pub fn listen(&self, inbox: crate::upload::Inbox, runs: Runs, notices: Rc<RefCell<Vec<String>>>, ctx: egui::Context) {
+        let bridge = self.clone();
         let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
-            if event.origin() != origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &parent)) {
+            if event.origin() != bridge.origin || !event.source().is_some_and(|s| js_sys::Object::is(&s, &bridge.parent)) {
                 return;
             }
             let data = event.data();
-            if string(&data, "type").as_deref() != Some("cadcraft:open") {
-                return;
+            let Some(kind) = string(&data, "type") else { return };
+            match kind.as_str() {
+                "craft:open" => {
+                    let Some(session) = string(&data, "session").filter(|s| !s.is_empty()) else { return };
+                    let name: String = string(&data, "name")
+                        .filter(|n| !n.trim().is_empty())
+                        .map(|n| n.chars().take(MAX_NAME_CHARS).collect())
+                        .unwrap_or_else(|| "Drawing.dxf".to_string());
+                    // Refuse an oversized drawing before copying it into the app's memory.
+                    let Some(array) = byte_array(&data) else { return };
+                    if let Some(e) = CadApp::open_size_error(&name, u64::from(array.length())) {
+                        inbox.refuse(e);
+                        return;
+                    }
+                    *bridge.opened.borrow_mut() = Opened {
+                        session,
+                        name: name.clone(),
+                        version_id: string(&data, "versionId").unwrap_or_default(),
+                        read_only: boolean(&data, "readOnly"),
+                    };
+                    inbox.receive(name, array.to_vec());
+                    crate::handoff::wasm::note_open();
+                }
+                // The loader keeps the place on `__craftFirstView`; the app reads it (handoff.rs) - this wakes it.
+                "craft:view" => {}
+                "craft:saved" => {
+                    let mut opened = bridge.opened.borrow_mut();
+                    if string(&data, "session").as_deref() == Some(opened.session.as_str())
+                        && let Some(version) = string(&data, "versionId")
+                    {
+                        opened.version_id = version;
+                    }
+                }
+                "craft:refused" => {
+                    if string(&data, "session").as_deref() == Some(bridge.opened.borrow().session.as_str()) {
+                        let reason = string(&data, "reason").unwrap_or_else(|| "refused".into());
+                        notices.borrow_mut().push(format!("Couldn't save: {reason}"));
+                    }
+                }
+                "craft:command" => {
+                    let session = string(&data, "session").unwrap_or_default();
+                    let id = js_sys::Reflect::get(&data, &JsValue::from_str("id")).ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let (current, read_only) = {
+                        let opened = bridge.opened.borrow();
+                        (opened.session.clone(), opened.read_only)
+                    };
+                    if session.is_empty() || session != current {
+                        bridge.post_result(id, Err("session-mismatch: this command is for another open of the file".into()));
+                    } else if read_only {
+                        bridge.post_result(id, Err("read-only: this file is open to view; the assistant cannot change it".into()));
+                    } else if string(&data, "method").as_deref() != Some("command.batch") {
+                        bridge.post_result(id, Err("method-not-allowed: a run is one command.batch".into()));
+                    } else {
+                        let params = js_sys::Reflect::get(&data, &JsValue::from_str("params"))
+                            .ok()
+                            .and_then(|p| js_sys::JSON::stringify(&p).ok())
+                            .and_then(|s| s.as_string())
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or(serde_json::Value::Null);
+                        runs.borrow_mut().push(Run { id, params });
+                    }
+                }
+                _ => {}
             }
-            let name = string(&data, "name")
-                .filter(|n| !n.trim().is_empty())
-                .map(|n| n.chars().take(MAX_NAME_CHARS).collect())
-                .unwrap_or_else(|| "Drawing.dxf".to_string());
-            // Refuse an oversized drawing before copying it into the app's memory.
-            let Some(array) = byte_array(&data) else { return };
-            if let Some(e) = CadApp::open_size_error(&name, u64::from(array.length())) {
-                inbox.refuse(e);
-                return;
-            }
-            inbox.receive(name, array.to_vec());
+            ctx.request_repaint();
         });
         if self.window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref()).is_ok() {
             // The listener lives as long as the page.
@@ -97,32 +242,67 @@ impl Bridge {
 
     /// After each frame: tell the parent when unsaved changes appear or go away.
     pub fn report_dirty(&self, app: &CadApp, reported: &DirtyReport) {
-        let dirty = app.session.docs.iter().any(|d| d.is_dirty());
-        if reported.0.get() != Some(dirty) && self.send(&[("type", "cadcraft:dirty".into()), ("dirty", dirty.into())]) {
-            reported.0.set(Some(dirty));
+        let session = self.opened.borrow().session.clone();
+        if session.is_empty() {
+            return;
         }
+        let dirty = app.session.docs.iter().any(|d| d.is_dirty());
+        let now = (session.clone(), dirty);
+        let last = reported.0.take();
+        if last.as_ref() == Some(&now) {
+            reported.0.set(last);
+            return;
+        }
+        let sent = message(&[("type", "craft:dirty".into()), ("session", session.as_str().into()), ("dirty", dirty.into())]).is_some_and(|m| self.post(&m, None).is_ok());
+        reported.0.set(if sent { Some(now) } else { last });
     }
 
-    fn post_save(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+    fn post_save(&self, name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
+        let (session, base, as_copy) = {
+            let opened = self.opened.borrow();
+            if opened.session.is_empty() {
+                return Err("the host has not opened a drawing yet".to_string());
+            }
+            if opened.read_only {
+                return Err("this file is open to view; saving is off".to_string());
+            }
+            (opened.session.clone(), opened.version_id.clone(), name != opened.name)
+        };
         let buffer = js_sys::Uint8Array::from(bytes).buffer();
-        let message = message(&[("type", "cadcraft:save".into()), ("name", name.into()), ("bytes", buffer.clone().into())])
-            .ok_or_else(|| "couldn't build the message".to_string())?;
-        self.parent
-            .post_message_with_transfer(&message, &self.origin, &js_sys::Array::of1(&buffer))
-            .map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))
-    }
-
-    /// Post a message to the parent; false if it couldn't be sent.
-    fn send(&self, fields: &[(&str, JsValue)]) -> bool {
-        message(fields).is_some_and(|m| self.parent.post_message(&m, &self.origin).is_ok())
+        let m = message(&[
+            ("type", "craft:save".into()),
+            ("session", session.as_str().into()),
+            ("name", name.into()),
+            ("mime", mime.into()),
+            ("baseVersionId", base.as_str().into()),
+            ("saveAs", as_copy.into()),
+            ("bytes", buffer.clone().into()),
+        ])
+        .ok_or_else(|| "couldn't build the message".to_string())?;
+        self.post(&m, Some(&buffer))
     }
 }
 
-/// The engine's delivery hook in host mode ([`cadcraft_engine::cmd::file::set_deliver`]): hand
-/// the file to the parent page. `Ok` once it was posted; the engine then counts a drawing as saved.
-pub fn deliver(name: &str, _mime: &str, bytes: &[u8]) -> Result<(), String> {
-    let bridge = BRIDGE.with(|b| b.borrow().clone()).ok_or("the page that embeds CADCraft is gone")?;
-    bridge.post_save(name, bytes)
+impl crate::handoff::Link for Bridge {
+    fn open_seq(&self) -> u64 {
+        crate::handoff::wasm::opens()
+    }
+    fn take_view(&self) -> Option<crate::handoff::FirstView> {
+        crate::handoff::wasm::take_view(&self.opened.borrow().session)
+    }
+    fn post_opened(&self) {
+        Bridge::post_opened(self);
+    }
+    fn post_viewed(&self) {
+        Bridge::post_viewed(self);
+    }
+}
+
+/// The engine's delivery hook when framed ([`cadcraft_engine::cmd::file::set_deliver`]): hand the file to the host. `Ok` once it was
+/// posted; the engine then counts a drawing as saved.
+pub fn deliver(name: &str, mime: &str, bytes: &[u8]) -> Result<(), String> {
+    let bridge = BRIDGE.with(|b| b.borrow().clone()).ok_or("the page that embeds CAD is gone")?;
+    bridge.post_save(name, mime, bytes)
 }
 
 fn message(fields: &[(&str, JsValue)]) -> Option<js_sys::Object> {
@@ -135,6 +315,10 @@ fn message(fields: &[(&str, JsValue)]) -> Option<js_sys::Object> {
 
 fn string(data: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(data, &JsValue::from_str(key)).ok()?.as_string()
+}
+
+fn boolean(data: &JsValue, key: &str) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str(key)).ok().and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 /// `bytes` (an `ArrayBuffer` or `Uint8Array`) as a view, not yet copied.

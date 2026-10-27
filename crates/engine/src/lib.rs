@@ -22,6 +22,7 @@ mod finite;
 pub mod grip_dims;
 pub mod grips;
 mod guard;
+pub mod host_commands;
 pub mod lisp;
 pub mod mtext_edit;
 pub mod pointmod;
@@ -1921,3 +1922,5 @@ fn next_token(rest: &str) -> (&str, Option<&str>) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod host_commands_tests;

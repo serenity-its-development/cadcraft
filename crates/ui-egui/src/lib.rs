@@ -1,4 +1,4 @@
-//! The CADCraft egui front end.
+//! The CAD egui front end.
 //!
 //! A thin shell over [`cadcraft_engine::Session`]: panels read engine state and act through
 //! commands (`app.run(id, params)`) or the command line (`app.cmdline(text)`). Nothing here owns
@@ -121,7 +121,7 @@ pub use cadcraft_engine::cmd::file::Version as SaveVersion;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SaveFormat {
-    /// CADCraft's native format, and the default.
+    /// CAD's native format, and the default.
     #[default]
     Dxf,
     Dwg,
@@ -487,7 +487,7 @@ impl CadApp {
     pub fn open_size_error(name: &str, len: u64) -> Option<String> {
         (len > Self::MAX_OPEN_BYTES).then(|| {
             format!(
-                "Open: {name} is {:.1} MB, larger than the {} MB CADCraft opens in the browser",
+                "Open: {name} is {:.1} MB, larger than the {} MB CAD opens in the browser",
                 len as f64 / 1048576.0,
                 Self::MAX_OPEN_BYTES >> 20
             )
@@ -507,6 +507,37 @@ impl CadApp {
         let data = cadcraft_engine::cmd::file::base64_encode(bytes);
         let r = self.run("open", json!({ "data": data, "name": name }));
         self.opened(r);
+    }
+
+    /// Put the view where the host's read-only first view was left (OneOS progressive open). A place is the text selected in it, if the
+    /// drawing has it (the view centres on the first text that reads the same, at a third of the height it was), else how far down the
+    /// first view was scrolled (`y_fraction`, 0 top to 1 end) as the same fraction down the drawing's extents, at the height the view
+    /// has now. A view is not an edit: no undo step, nothing dirty. Returns whether the view moved.
+    pub fn open_at_first_view(&mut self, selection: &str, y_fraction: f64) -> bool {
+        let height = self.session.state().map(|s| s.view().height).unwrap_or(0.0);
+        if !(height.is_finite() && height > 0.0) {
+            return false;
+        }
+        let wanted = selection.trim();
+        if !wanted.is_empty()
+            && let Ok(found) = self.session.execute("texts", &json!({ "contains": wanted, "limit": 1 }))
+            && let Some(at) = found["texts"][0]["at"].as_array().and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+        {
+            return self.session.execute("view.set", &json!({ "center": at, "height": height / 3.0 })).is_ok();
+        }
+        if !(y_fraction.is_finite() && y_fraction > 0.0) {
+            return false;
+        }
+        let Ok(inspected) = self.session.execute("drawing.inspect", &json!({})) else { return false };
+        let ext = &inspected["extents"];
+        let (Some(y0), Some(y1), Some(x0), Some(x1)) =
+            (ext[0][1].as_f64(), ext[1][1].as_f64(), ext[0][0].as_f64(), ext[1][0].as_f64())
+        else {
+            return false;
+        };
+        // The top of the drawing is its highest y: scrolling down walks y down.
+        let y = y1 - (y1 - y0) * y_fraction.clamp(0.0, 1.0);
+        self.session.execute("view.set", &json!({ "center": [(x0 + x1) / 2.0, y], "height": height })).is_ok()
     }
 
     /// Report a file that could not be opened before OPEN ran (unreadable, too large) as a failed
@@ -854,7 +885,7 @@ mod tests {
     #[test]
     fn default_save_format_persists_and_names_new_drawings() {
         let mut a = app();
-        assert_eq!(a.ui.save_format, SaveFormat::Dxf, "default keeps DXF, CADCraft's native format");
+        assert_eq!(a.ui.save_format, SaveFormat::Dxf, "default keeps DXF, CAD's native format");
         assert!(a.run("ui.saveformat", json!({ "format": "pdf" })).is_err());
         assert_eq!(a.run("ui.saveformat", json!({ "format": "DWG" })).ok(), Some(json!({ "saveFormat": "dwg" })));
         assert_eq!(a.run("ui.saveformat", json!({})).ok(), Some(json!({ "saveFormat": "dwg" })), "no format: report it");

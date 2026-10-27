@@ -1,16 +1,19 @@
-//! CADCraft in the browser.
+//! CAD in the browser.
 //!
 //! Runs the same [`cadcraft_ui_egui::CadApp`] as the desktop app through eframe's web runner
 //! (wgpu: WebGPU where available, WebGL2 otherwise). Build with `trunk build --release` from this
 //! directory (output in `dist/web`). URL flags: `?webgl` forces WebGL2, `?cpu` draws the drawing
 //! with egui shapes instead of the GPU canvas, `?sample` opens the sample drawing. Saving downloads
-//! the drawing through the browser (`download.rs`). With `?host=parent` (inside an `<iframe>`), a
-//! same-origin parent page sends the drawing to open and stores what CADCraft saves instead
-//! (`host.rs`).
+//! the drawing through the browser (`download.rs`). Framed by OneOS (the frame page's loader declares
+//! the ONE parent origin as `globalThis.__craftHost`), the parent sends the drawing to open and stores
+//! what CAD saves instead, runs the assistant's allow-listed commands, and takes the progressive
+//! open's hand-over (`host.rs`, `handoff.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 #[cfg(target_arch = "wasm32")]
 pub mod download;
+#[cfg(any(target_arch = "wasm32", test))]
+mod handoff;
 #[cfg(target_arch = "wasm32")]
 mod host;
 
@@ -27,28 +30,64 @@ mod web {
     /// page embedding it (`?host=parent`), the browser's `prefers-reduced-motion` (it stays
     /// live, so View ▸ Accessibility ▸ Animation Effects ▸ Use System Setting follows a change),
     /// and the document title last written to the page.
-    struct Shell(
-        CadApp,
-        crate::upload::Inbox,
-        Option<(crate::host::Bridge, crate::host::DirtyReport)>,
-        Option<web_sys::MediaQueryList>,
-        Option<String>,
-    );
+    struct Shell(CadApp, crate::upload::Inbox, Option<Hosted>, Option<web_sys::MediaQueryList>, Option<String>);
+
+    /// What OneOS framing adds: the bridge, the dirty state last reported, the assistant's runs and the host's notices waiting
+    /// for the next frame, and the progressive open's hand-over (keyed by the drawing the app shows).
+    struct Hosted {
+        bridge: crate::host::Bridge,
+        reported: crate::host::DirtyReport,
+        runs: crate::host::Runs,
+        notices: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        handoff: crate::handoff::Handoff<Option<u64>>,
+    }
+
+    impl Hosted {
+        /// The assistant's runs, each ONE undo step (or none): answered to the host on the session it was asked in.
+        fn run_commands(&self, app: &mut CadApp) {
+            for run in std::mem::take(&mut *self.runs.borrow_mut()) {
+                let outcome = app.session.run_command_batch(&run.params);
+                app.session.touch();
+                self.bridge.post_result(run.id, outcome);
+            }
+            for notice in std::mem::take(&mut *self.notices.borrow_mut()) {
+                app.set_status(notice);
+            }
+        }
+    }
+
+    fn shown(app: &CadApp) -> Option<u64> {
+        app.session.state().ok().map(|s| s.uid)
+    }
 
     impl eframe::App for Shell {
         /// Runs one frame: takes in files dropped on or picked for the page, drains the background
         /// uploads, follows the browser's reduced-motion setting, runs the app, writes the browser
         /// document title when it changed (so the tab and an embedding page name the open
-        /// drawing), and reports unsaved changes to that page.
+        /// drawing), and reports unsaved changes to that page. Framed, it also runs the assistant's
+        /// commands and answers the host's progressive-open hand-over.
         fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
             self.1.take_dropped(ctx);
+            if let Some(h) = self.2.as_mut() {
+                h.handoff.before(&h.bridge, shown(&self.0));
+            }
             self.1.drain(&mut self.0);
             self.0.system_animations = self.3.as_ref().map(|reduced| !reduced.matches());
+            if let Some(h) = self.2.as_ref() {
+                h.run_commands(&mut self.0);
+            }
             self.0.logic(ctx);
             let drawing = self.0.session.state().ok();
             crate::push_title(&mut self.4, drawing.map(|d| d.title.as_str()), drawing.is_some_and(|d| d.is_dirty()), set_page_title);
-            if let Some((bridge, reported)) = &self.2 {
-                bridge.report_dirty(&self.0, reported);
+            if let Some(h) = self.2.as_mut() {
+                h.bridge.report_dirty(&self.0, &h.reported);
+                let doc = shown(&self.0);
+                let app = &mut self.0;
+                if h.handoff.after(&h.bridge, doc, |view| {
+                    app.open_at_first_view(&view.selection, view.y_fraction());
+                }) {
+                    ctx.request_repaint();
+                }
             }
         }
         fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -65,8 +104,8 @@ mod web {
         }
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             self.0.ui(ui);
-            if let Some((bridge, reported)) = &self.2 {
-                bridge.report_dirty(&self.0, reported);
+            if let Some(h) = self.2.as_ref() {
+                h.bridge.report_dirty(&self.0, &h.reported);
             }
         }
     }
@@ -83,10 +122,6 @@ mod web {
 
     fn query() -> String {
         web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
-    }
-
-    fn query_param(key: &str) -> Option<String> {
-        web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
     }
 
     /// No file picker on the web: Save / Save As from the menu (and the close prompt) download the
@@ -112,10 +147,9 @@ mod web {
             groups: cadcraft_io::entity_groups,
             entity: cadcraft_io::entity_from_groups,
         });
-        // `?host=parent`: a same-origin page framing CADCraft (such as a Nextcloud app) opens
-        // drawings in it and stores what it saves. Otherwise there is no file system here: saved
-        // files reach the user as browser downloads.
-        let bridge = if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
+        // Framed by OneOS (the frame page declared the ONE parent origin): the parent opens drawings in it and stores what it saves.
+        // Otherwise there is no file system here: saved files reach the user as browser downloads.
+        let bridge = crate::host::Bridge::new();
         match &bridge {
             Some(bridge) => {
                 bridge.install();
@@ -172,9 +206,11 @@ mod web {
                             None
                         }));
                         let host = app_bridge.map(|bridge| {
-                            bridge.listen(inbox.clone());
+                            let runs = crate::host::Runs::default();
+                            let notices = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                            bridge.listen(inbox.clone(), runs.clone(), notices.clone(), cc.egui_ctx.clone());
                             bridge.post_ready();
-                            (bridge, crate::host::DirtyReport::default())
+                            Hosted { bridge, reported: crate::host::DirtyReport::default(), runs, notices, handoff: crate::handoff::Handoff::new() }
                         });
                         let reduced_motion = web_sys::window().and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
                         Ok(Box::new(Shell(app, inbox, host, reduced_motion, None)))
@@ -188,7 +224,7 @@ mod web {
                 match result {
                     Ok(()) => el.remove(),
                     Err(e) => {
-                        el.set_inner_html(&format!("<p>CADCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"))
+                        el.set_inner_html(&format!("<p>CAD failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"))
                     }
                 }
             }

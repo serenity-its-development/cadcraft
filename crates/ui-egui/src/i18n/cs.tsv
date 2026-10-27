@@ -1,6 +1,6 @@
-# CADCraft Czech interface catalog — original translations by @Losminek (AI-assisted).
+# CAD Czech interface catalog — original translations by @Losminek (AI-assisted).
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Written from the meaning of CADCraft English strings; no proprietary translations copied.
+# Written from the meaning of CAD English strings; no proprietary translations copied.
 # UTF-8: context<TAB>English source<TAB>Czech translation.
 # @plural = one|few|other forms for integer counts.
 	Apply	Použít
@@ -50,7 +50,7 @@
 	> Greater than	> Větší než
 	A variable name starts with a letter and has only letters, digits and _	Název proměnné začíná písmenem a obsahuje pouze písmena, číslice a _
 	About	O aplikaci
-	About CADCraft	O aplikaci CADCraft
+	About CAD	O aplikaci CAD
 	Absolute	Absolutní
 	Add Leader	Přidat odkaz
 	Additional angles	Další úhly
@@ -111,7 +111,7 @@
 	ByBlock	Dle bloku
 	ByColor	Dle barvy
 	ByLayer	Dle hladiny
-	CADCraft Help	Nápověda CADCraft
+	CAD Help	Nápověda CAD
 	Cancel	Zrušit
 	Cartesian (x, y)	Kartézské (x, y)
 	Center	Střed
@@ -436,8 +436,6 @@
 	Jogged	Zalomená
 	Jogged Linear	Zalomená lineární
 	Join	Spojit
-	Join the ArtCraft Discord…	Připojit se na Discord ArtCraft…
-	Join us on Discord	Připojte se k nám na Discordu
 	Isometric Plane	Izometrická rovina
 	Isometric snap	Izometrické uchopení
 	Language	Jazyk
@@ -578,7 +576,6 @@
 	Offset	Ekvidistanta
 	On	Zapnuto
 	On/Off	Zapnout/Vypnout
-	One of the Crafting Apps by the ArtCraft team and community.	Jedna z aplikací Crafting Apps od týmu ArtCraft a komunity.
 	Only in this drawing: {n}	Pouze v tomto výkresu: {n}
 	Only in {name}: {n}	Pouze v {name}: {n}
 	Open (⌘O)	Otevřít (⌘O)
@@ -696,7 +693,7 @@
 	Quick Select...	Rychlý výběr...
 	QuickCalc	Rychlá kalkulačka
 	QuickCalc Pick	Výběr pro rychlou kalkulačku
-	Quit CADCraft	Ukončit CADCraft
+	Quit CAD	Ukončit CAD
 	Radius	Poloměr
 	Raster Image	Rastrový obrázek
 	Ray	Polopřímka
@@ -929,7 +926,7 @@
 	Specify insertion point	Určete bod vložení
 	A drawing opened from a file keeps that file's format.	Výkres otevřený ze souboru si zachová formát tohoto souboru.
 	An array that would create more objects than this is refused.	Pole překračující tento počet objektů bude odmítnuto.
-	CADCraft keeps these preferences, object snap modes and drafting toggles for your user account and restores them when it starts.	CADCraft ukládá tyto předvolby, režimy uchopení objektu a přepínače kreslení pro váš uživatelský účet a obnovuje je při spuštění.
+	CAD keeps these preferences, object snap modes and drafting toggles for your user account and restores them when it starts.	CAD ukládá tyto předvolby, režimy uchopení objektu a přepínače kreslení pro váš uživatelský účet a obnovuje je při spuštění.
 	Changes apply at once and are kept for next time.	Změny se projeví okamžitě a uloží se pro příště.
 	Command line history	Historie příkazového řádku
 	Copy as JSON	Kopírovat jako JSON
@@ -1177,7 +1174,7 @@
 @plural	{n} contributor	{n} přispěvatel|{n} přispěvatelé|{n} přispěvatelů
 	Drawing as bytes	Výkres jako bajty
 	Services	Služby
-	Hide CADCraft	Skrýt CADCraft
+	Hide CAD	Skrýt CAD
 	Hide Others	Skrýt ostatní
 	Accessibility	Zpřístupnění
 	Show System Cursor	Zobrazit systémový kurzor
@@ -1211,7 +1208,7 @@
 	X	X
 	Y	Y
 	B	B
-	CADCraft	CADCraft
+	CAD	CAD
 	More toolbar commands	Další příkazy panelu nástrojů
 menu	View	Zobrazení
 menu	Draw	Kreslení

@@ -669,6 +669,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cadcraft-host-node"
+version = "0.12.0"
+dependencies = [
+ "cadcraft-engine",
+ "cadcraft-io",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "cadcraft-io"
 version = "0.12.0"
 dependencies = [
@@ -747,6 +757,7 @@ dependencies = [
  "cadcraft-ui-egui",
  "eframe",
  "egui",
+ "js-sys",
  "log",
  "serde_json",
  "wasm-bindgen",
