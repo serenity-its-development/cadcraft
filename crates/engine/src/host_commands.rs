@@ -12,10 +12,120 @@ use serde_json::{Value, json};
 
 use crate::Session;
 
-/// Registry commands the assistant may run. Each acts at once on the drawing (no dialog, no file picker, no pointer gesture), and
-/// none is Undo or Redo: undoing a run is the person's.
+/// Registry commands the assistant may run: EVERY command of the registry except those in [`LEFT_OUT`], each with its reason.
+/// The drawing's whole command registry (draw, modify, annotate, layers, styles, blocks, tables, layouts, view, inquiry). A step the document's state forbids, or one that needs a dialog or a pointer, is refused by the registry exactly as it would be for
+/// the person, and the run is taken back whole.
 pub const ASSISTANT_COMMANDS: &[&str] = &[
-    // Draw.
+    // general
+    "scalelistedit",
+    "objectscale",
+    "aiobjectscaleadd",
+    "aiobjectscaleremove",
+    "annoreset",
+    "annoupdate",
+    // annovisible
+    "annovisible.current",
+    "annovisible.all",
+    "annovisible.toggle",
+    // general
+    "dimlinear",
+    "dimaligned",
+    "dimradius",
+    "dimdiameter",
+    "dimangular",
+    "dimarc",
+    "dimordinate",
+    "dimcontinue",
+    "dimbaseline",
+    "qdim",
+    "dim",
+    "mleader",
+    "leader",
+    // dimstyle
+    "dimstyle.update",
+    // general
+    "dimoverride",
+    "dimreassociate",
+    "dimdisassociate",
+    // dimtedit
+    "dimtedit.home",
+    "dimtedit.angle",
+    "dimtedit.left",
+    "dimtedit.center",
+    "dimtedit.right",
+    // general
+    "dimtedit",
+    "dimspace",
+    "dimedit",
+    // dimedit
+    "dimedit.oblique",
+    // general
+    "dimjogged",
+    "dimjogline",
+    "dimbreak",
+    "diminspect",
+    "arrayedit",
+    "arrayclose",
+    "array",
+    "arrayrect",
+    "arraypolar",
+    "audit",
+    "attedit",
+    "attdisp",
+    // attdisp
+    "attdisp.normal",
+    "attdisp.on",
+    "attdisp.off",
+    // general
+    "attsync",
+    "bedit",
+    "bsave",
+    "bsaveas",
+    "bclose",
+    "blockreplace",
+    "burst",
+    "eattext",
+    "refedit",
+    "refset",
+    "refclose",
+    "xbind",
+    "block",
+    "insert",
+    "attdef",
+    "base",
+    // blocks
+    "blocks.dynamic",
+    "blocks.reference",
+    "blocks.reference.set",
+    "blocks.reference.grips",
+    "blocks.reference.grip",
+    // general
+    "purge",
+    // blocks
+    "blocks.list",
+    // general
+    "geomconstraint",
+    "autoconstrain",
+    "constraintbar",
+    // constraintbar
+    "constraintbar.showall",
+    "constraintbar.hideall",
+    // general
+    "dimconstraint",
+    "dclinear",
+    "dcdisplay",
+    // dcdisplay
+    "dcdisplay.showall",
+    "dcdisplay.hideall",
+    // general
+    "delconstraint",
+    "parameters",
+    "constraintsettings",
+    "constraintinfer",
+    // constraints
+    "constraints.inspect",
+    "constraints.dof",
+    // general
     "line",
     "pline",
     "circle",
@@ -24,23 +134,190 @@ pub const ASSISTANT_COMMANDS: &[&str] = &[
     "polygon",
     "ellipse",
     "point",
+    // point
+    "point.multiple",
+    // general
     "xline",
     "ray",
     "spline",
     "donut",
     "text",
+    "mtext",
+    "breakline",
+    "mline",
+    "mlstyle",
+    "mledit",
+    // arc
+    "arc.sce",
+    "arc.sca",
+    "arc.scl",
+    "arc.sea",
+    "arc.sed",
+    "arc.ser",
+    "arc.cse",
+    "arc.csa",
+    "arc.csl",
+    "arc.continue",
+    // circle
+    "circle.cd",
+    "circle.2p",
+    "circle.3p",
+    "circle.ttr",
+    "circle.ttt",
+    // ellipse
+    "ellipse.axis",
+    "ellipse.arc",
+    // general
     "divide",
     "measure",
     "revcloud",
+    // revcloud
+    "revcloud.polygonal",
+    "revcloud.freehand",
+    // general
+    "wipeout",
+    "3dpoly",
+    "helix",
+    // spline
+    "spline.cv",
+    // general
+    "centermark",
+    "centerline",
+    "draworder",
+    // draworder
+    "draworder.front",
+    "draworder.back",
+    "draworder.above",
+    "draworder.under",
+    // general
+    "texttofront",
+    // texttofront
+    "texttofront.text",
+    "texttofront.dimensions",
+    "texttofront.leaders",
+    "texttofront.all",
+    // general
+    "hatchtoback",
+    "cutclip",
+    "cutbase",
+    "copyclip",
+    "copybase",
+    "pasteclip",
+    "pasteblock",
+    "pasteorig",
+    // erase
+    "erase.selection",
+    // general
+    "selectall",
+    "ai_deselect",
+    "select",
+    "preview",
+    // grip
+    "grip.move",
+    "grip.stretch",
+    "grip.rotate",
+    "grip.scale",
+    "grip.mirror",
+    "grip.option",
+    // general
+    "grip",
+    "pickstyle",
+    "group",
+    "ungroup",
+    "groupedit",
+    // groups
+    "groups.list",
+    // general
     "hatch",
     "gradient",
     "boundary",
     "region",
-    "table",
-    "table.set",
-    "mleader",
-    "leader",
-    // Modify.
+    "hatchedit",
+    "hatchpick",
+    "union",
+    "subtract",
+    "intersect",
+    "massprop",
+    "dist",
+    "id",
+    "list",
+    "area",
+    "time",
+    "status",
+    // drawing
+    "drawing.inspect",
+    // general
+    "entities",
+    "shapes",
+    "usage",
+    "loops",
+    "texts",
+    "countlist",
+    "counttable",
+    "count",
+    "layer",
+    // layer
+    "layer.new",
+    "layer.set",
+    "layer.current",
+    "layer.delete",
+    // general
+    "laymcur",
+    "laymch",
+    "laycur",
+    "layiso",
+    "layuniso",
+    "layfrz",
+    "layoff",
+    "laylck",
+    "layulk",
+    "layon",
+    "laythw",
+    "layerp",
+    // layerstate
+    "layerstate.save",
+    "layerstate.restore",
+    "layerstate.list",
+    "layerstate.delete",
+    "layerstate.rename",
+    // general
+    "laymrg",
+    "laydel",
+    "plotstyle",
+    "layout",
+    // layout
+    "layout.new",
+    "layout.delete",
+    "layout.rename",
+    "layout.copy",
+    "layout.list",
+    // general
+    "mview",
+    // mview
+    "mview.polygonal",
+    // general
+    "vpclip",
+    "vports",
+    // vports
+    "vports.1",
+    "vports.2",
+    "vports.3",
+    "vports.4",
+    // viewport
+    "viewport.set",
+    // general
+    "vplayer",
+    "pagesetup",
+    "mspace",
+    "pspace",
+    "mleaderedit",
+    // mleaderedit
+    "mleaderedit.add",
+    "mleaderedit.remove",
+    // general
+    "mleaderalign",
+    "mleadercollect",
+    "erase",
     "move",
     "copy",
     "rotate",
@@ -56,85 +333,190 @@ pub const ASSISTANT_COMMANDS: &[&str] = &[
     "break",
     "breakatpoint",
     "join",
+    "pedit",
+    "splinedit",
     "lengthen",
     "align",
     "blend",
     "reverse",
-    "erase",
+    "ncopy",
+    "mocoro",
+    "chspace",
     "flatten",
-    "overkill",
+    "arraypath",
     "textedit",
-    "array",
-    "arrayrect",
-    "arraypolar",
-    "union",
-    "subtract",
-    "intersect",
-    "group",
-    "ungroup",
-    "draworder",
-    // Dimension.
-    "dimlinear",
-    "dimaligned",
-    "dimradius",
-    "dimdiameter",
-    "dimangular",
-    "dimarc",
-    "dimcontinue",
-    "dimbaseline",
-    // Properties, layers and styles.
+    "overkill",
+    "properties",
+    // properties
     "properties.set",
+    // general
     "matchprop",
     "color",
+    "linetype",
+    // hatch
+    "hatch.patterns",
+    // general
     "lweight",
     "ltscale",
-    "layer.new",
-    "layer.set",
-    "layer.current",
-    "layer.delete",
-    "laymch",
-    "laycur",
-    "layiso",
-    "layfrz",
-    "layoff",
-    "laylck",
-    "layulk",
-    "style",
-    "style.current",
-    "dimstyle",
-    "dimstyle.current",
-    "block",
     "units",
+    "thickness",
     "limits",
-    // Choosing what the next step acts on.
-    "select",
-    "selectall",
-    "ai_deselect",
-    // The view (changes nothing in the drawing).
-    "zoom",
-    "pan",
-    "view.set",
-    // Read-only.
-    "list",
-    "dist",
-    "area",
-    "id",
-    "properties",
-    "entities",
-    "texts",
-    "drawing.inspect",
-    "layer",
+    "style",
+    // style
     "style.list",
+    "style.rename",
+    "style.delete",
+    "style.current",
+    // general
+    "dimstyle",
+    // dimstyle
+    "dimstyle.dimension",
     "dimstyle.list",
-    "groups.list",
-    "measuregeom",
+    "dimstyle.rename",
+    "dimstyle.delete",
+    "dimstyle.current",
+    "dimstyle.override",
+    // general
+    "tablestyle",
+    "mleaderstyle",
+    "ddptype",
+    "rename",
+    "qselect",
+    // qselect
+    "qselect.info",
+    // general
+    "selectsimilar",
+    "isolateobjects",
+    "hideobjects",
+    "unisolateobjects",
+    "ortho",
+    "grid",
+    "snap",
+    "polar",
+    "otrack",
+    "dynmode",
+    "lwdisplay",
+    "isodraft",
+    "isoplane",
+    "transparencydisplay",
+    "qpmode",
+    "selectioncycling",
+    "osnap",
+    "setvar",
     "getvar",
+    "sysvars",
+    // table
+    "table.break",
+    // tablestyle
+    "tablestyle.cellstyle",
+    // table
+    "table.cellstyle",
+    "table.formula",
+    "table.recalc",
+    // general
+    "tabledit",
+    "table",
+    // table
+    "table.set",
+    "table.insertrow",
+    "table.deleterow",
+    "table.insertcol",
+    "table.deletecol",
+    "table.merge",
+    "table.unmerge",
+    // general
+    "tolerance",
+    "txt2mtxt",
+    "cal",
+    "find",
+    "measuregeom",
+    // radius
+    "radius.measure",
+    // angle
+    "angle.measure",
+    // volume
+    "volume.measure",
+    // general
+    "view",
+    // vports
+    "vports.activate",
+    // general
+    "zoom",
+    // zoom
+    "zoom.realtime",
+    "zoom.dynamic",
+    "zoom.previous",
+    "zoom.window",
+    "zoom.in",
+    "zoom.out",
+    "zoom.all",
+    "zoom.extents",
+    "zoom.object",
+    // general
+    "pan",
+    // pan
+    "pan.left",
+    "pan.right",
+    "pan.up",
+    "pan.down",
+    // general
+    "regen",
+    "regenall",
+    "redraw",
+    // view
+    "view.set",
+    "view.get",
+    // layout
+    "layout.set",
+    // general
+    "dcaligned",
+    "dcangular",
+    "dcdiameter",
+    "dchorizontal",
+    "dcradius",
+    "dcvertical",
+    "gccoincident",
+    "gccollinear",
+    "gcconcentric",
+    "gcequal",
+    "gcfix",
+    "gchorizontal",
+    "gcparallel",
+    "gcperpendicular",
+    "gcsmooth",
+    "gcsymmetric",
+    "gctangent",
+    "gcvertical",
 ];
 
 /// Commands the window itself provides.
 pub const ARGUMENT_COMMANDS: &[&str] = &[
     // Read-only: the drawing as a PNG, base64, fitted to its extents (the drawing's own EXPORT, with no path).
     "render",
+];
+
+/// Registry commands left OUT of the allow-list, grouped by the reason (the audit lists them; every registry command is in exactly one of the two).
+pub const LEFT_OUT: &[(&str, &[&str])] = &[
+    (
+        "files: opens, saves, exports, imports, plots or attaches a file, or runs a script or LISP program; or needs a second drawing file (files move only through the host)",
+        &["recover", "drawingrecovery", "dataextraction", "xattach", "xref", "xopen", "wblock", "import", "export", "publish", "pdfbook", "attach", "compareexport", "compare", "compare.next", "compare.previous", "compareclose", "aliasedit", "reinit", "new", "open", "close", "closeall", "qsave", "saveas", "document.switch", "document.bytes", "script", "plot", "exportpdf", "appload", "lisp", "plotwindow", "plottermanager", "datalink", "datalinkupdate", "tableexport"],
+    ),
+    (
+        "history: Undo and Redo are the person's",
+        &["u", "undo", "redo", "mredo"],
+    ),
+    (
+        "command-line prompt forms (a leading dash): the same command is listed without the dash and takes JSON arguments",
+        &["-attedit", "-xref", "-block", "-group", "-plottermanager", "-linetype", "-vports"],
+    ),
+    (
+        "not available in this build (the engine answers that it is not implemented)",
+        &["share", "3dorbit"],
+    ),
+    (
+        "opens a dialog or palette of the application, not an edit of the drawing",
+        &["battman", "stylesmanager", "options", "dsettings", "quickcalc.pick"],
+    ),
 ];
 
 /// Every command id a run may name, in the order the host's registry declares them.
