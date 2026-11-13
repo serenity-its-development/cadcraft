@@ -401,6 +401,42 @@ fn save_to_options(st: &crate::DocState, path: &str) -> SaveAs {
     SaveAs { version: None, binary: st.binary_dxf && is_dxf(path) }
 }
 
+/// What QSAVE of the host's file `name` would lose (oneos files/044: auto-save writes only a format that loses nothing): a DWG drops the
+/// entities of object types CADCraft does not model, which DXF keeps as read ([`not_saved_as`]). Empty: the file keeps the drawing.
+pub fn host_save_losses(s: &Session, name: &str) -> Result<Vec<String>> {
+    let st = host_drawing(s, name)?;
+    if !drops_unknown(name) {
+        return Ok(Vec::new());
+    }
+    let lost = not_saved_as(st.drawing(), drawing_version_of(st.drawing(), name));
+    Ok(lost.iter().map(|(kind, n)| format!("{n} {kind} {}", if *n == 1 { "entity" } else { "entities" })).collect())
+}
+
+/// The host's file as DXF (`<stem>.dxf`), which keeps every entity as read: the lossless file the host keeps beside a DWG that would
+/// lose some ([`host_save_losses`]). Only read; the drawing keeps its own version.
+pub fn host_export_dxf(s: &Session, name: &str) -> Result<(String, Vec<u8>)> {
+    let st = host_drawing(s, name)?;
+    let stem = std::path::Path::new(name).file_stem().map_or_else(|| "Drawing".into(), |x| x.to_string_lossy().into_owned());
+    let dxf = format!("{stem}.dxf");
+    let hooks = io().ok_or_else(|| bad("save", "file formats are not available in this build"))?;
+    write_drawing(hooks, st.drawing(), "save", &dxf, &SaveAs::default()).map(|b| (dxf, b))
+}
+
+/// The open drawing whose file is `name`, else the untitled one the host opened as `name`.
+fn host_drawing<'a>(s: &'a Session, name: &str) -> Result<&'a crate::DocState> {
+    s.docs
+        .iter()
+        .find(|d| d.path.as_deref() == Some(name))
+        .or_else(|| s.docs.iter().find(|d| d.path.is_none() && d.title == file_name(name)))
+        .ok_or_else(|| bad("save", format!("no open drawing is {}", file_name(name))))
+}
+
+/// [`drawing_version`] for a drawing that need not be the active one.
+fn drawing_version_of(d: &Drawing, path: &str) -> Version {
+    let v = d.header.get("ACADVER").and_then(cadcraft_doc::HVal::as_str).and_then(Version::for_acadver).unwrap_or_default();
+    if is_dxf(path) { v } else { v.max(Version::R2004) }
+}
+
 /// The bytes QSAVE would write for the host's file `name` (OneOS: the drawing the host opened under that name), as the drawing
 /// stands: the answer to the host's ask for an export (auto-save, save on close). Nothing here is a save: the session is only read,
 /// so nothing is committed, ended or marked saved, the drawing keeps its name, title and unsaved changes, and nothing is stored or

@@ -60,11 +60,19 @@ mod web {
         /// The host's asks for the bytes: the drawing as it stands, as Save writes the host's file, with nothing committed or
         /// marked saved.
         fn answer_exports(&self, app: &CadApp) {
-            for request in self.bridge.take_exports() {
+            for (request, keep_original) in self.bridge.take_exports() {
                 let name = self.bridge.opened_name();
-                match cadcraft_engine::cmd::file::host_export_bytes(&app.session, &name) {
-                    Ok(bytes) => {
-                        if let Err(e) = self.bridge.post_export(&bytes, request) {
+                // oneos files/044: the host's file when it loses nothing (or the person chose it, accepting the loss), else DXF beside it.
+                let answer = cadcraft_engine::cmd::file::host_save_losses(&app.session, &name).and_then(|losses| {
+                    if keep_original || losses.is_empty() {
+                        cadcraft_engine::cmd::file::host_export_bytes(&app.session, &name).map(|b| (name.clone(), b, losses))
+                    } else {
+                        cadcraft_engine::cmd::file::host_export_dxf(&app.session, &name).map(|(n, b)| (n, b, losses))
+                    }
+                });
+                match answer {
+                    Ok((as_name, bytes, losses)) => {
+                        if let Err(e) = self.bridge.post_export(&as_name, &bytes, request, &losses) {
                             log::warn!("CAD: the export could not be handed to the host: {e}");
                         }
                     }

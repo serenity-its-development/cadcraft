@@ -2,7 +2,7 @@
 //! writes for the host's file, and the drawing is as it was (unsaved, same name and title, nothing stored or logged).
 
 use cadcraft_engine::Session;
-use cadcraft_engine::cmd::file::{IoHooks, host_export_bytes, set_io, set_write_as};
+use cadcraft_engine::cmd::file::{IoHooks, host_export_bytes, host_export_dxf, host_save_losses, set_io, set_write_as};
 use serde_json::json;
 
 fn real_formats() {
@@ -58,4 +58,30 @@ fn an_export_for_the_host_is_the_bytes_of_a_save_and_leaves_the_drawing_unsaved(
     let saved = std::fs::read(&path).unwrap();
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
     assert_eq!(saved, first);
+}
+
+/// oneos files/044: a DXF keeps every entity as read, so it auto-saves in place; a DWG that would drop entities of types CADCraft
+/// does not model goes to `<stem>.dxf` beside it, the losses named.
+#[test]
+fn a_dwg_that_would_drop_entities_names_them_and_a_dxf_keeps_everything() {
+    use cadcraft_engine::doc::{Common, Drawing, EntityKind, RawTag, Space, Unknown};
+    real_formats();
+    let mut d = Drawing::new_metric();
+    d.add(&Space::Model, Common::default(), EntityKind::Unknown(Unknown { dxf_type: "MLINE".into(), tags: vec![RawTag { code: 8, value: "0".into() }] })).unwrap();
+    let mut s = Session::empty();
+    s.open_drawing(d, "plan.dwg", None);
+    let losses = host_save_losses(&s, "plan.dwg").unwrap();
+    assert_eq!(losses, vec!["1 MLINE entity".to_string()]);
+    let (name, dxf) = host_export_dxf(&s, "plan.dwg").unwrap();
+    assert_eq!(name, "plan.dxf");
+    assert!(String::from_utf8_lossy(&dxf).contains("MLINE"), "DXF keeps the entity as read");
+    // NEGATIVE: the same drawing as DXF loses nothing; a plain drawing as DWG loses nothing either.
+    let mut d = Drawing::new_metric();
+    d.add(&Space::Model, Common::default(), EntityKind::Unknown(Unknown { dxf_type: "MLINE".into(), tags: vec![RawTag { code: 8, value: "0".into() }] })).unwrap();
+    let mut t = Session::empty();
+    t.open_drawing(d, "plan.dxf", None);
+    assert!(host_save_losses(&t, "plan.dxf").unwrap().is_empty());
+    let mut u = Session::empty();
+    u.open_drawing(Drawing::new_metric(), "clean.dwg", None);
+    assert!(host_save_losses(&u, "clean.dwg").unwrap().is_empty());
 }
