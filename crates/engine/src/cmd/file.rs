@@ -148,6 +148,11 @@ fn write_bytes(s: &Session, cmd: &str, path: &str, opts: &SaveAs) -> Result<Vec<
     }
     // A drawing file is the drawing outside the Block Editor; an image is what is shown.
     let d: &cadcraft_doc::Drawing = if is_drawing_file(path) { s.state()?.drawing() } else { s.doc()? };
+    write_drawing(hooks, d, cmd, path, opts)
+}
+
+/// `d` written to `path` with `opts` (see [`write_bytes`]).
+fn write_drawing(hooks: &IoHooks, d: &Drawing, cmd: &str, path: &str, opts: &SaveAs) -> Result<Vec<u8>> {
     let r = if *opts == SaveAs::default() {
         (hooks.write)(d, path)
     } else {
@@ -387,8 +392,37 @@ fn run_closeall(s: &mut Session, _p: &Value) -> Result<Value> {
 }
 
 pub(crate) fn save_to(s: &mut Session, path: &str) -> Result<usize> {
-    let opts = SaveAs { version: None, binary: s.state()?.binary_dxf && is_dxf(path) };
+    let opts = save_to_options(s.state()?, path);
     save_as(s, "save", path, &opts)
+}
+
+/// What QSAVE writes `st` to `path` with: the drawing's own version, and a binary DXF kept binary.
+fn save_to_options(st: &crate::DocState, path: &str) -> SaveAs {
+    SaveAs { version: None, binary: st.binary_dxf && is_dxf(path) }
+}
+
+/// The bytes QSAVE would write for the host's file `name` (OneOS: the drawing the host opened under that name), as the drawing
+/// stands: the answer to the host's ask for an export (auto-save, save on close). Nothing here is a save: the session is only read,
+/// so nothing is committed, ended or marked saved, the drawing keeps its name, title and unsaved changes, and nothing is stored or
+/// delivered. The drawing is the open one whose file is `name`, else the untitled one the host opened as `name` (a drawing opened
+/// from bytes has no path until it is saved). Refused when no open drawing is the host's file, when `name` is not a drawing file,
+/// and while a block reference is edited in place (a save refuses then too).
+pub fn host_export_bytes(s: &Session, name: &str) -> Result<Vec<u8>> {
+    const CMD: &str = "save";
+    if !is_drawing_file(name) {
+        return Err(bad(CMD, format!("{} is not a drawing file", file_name(name))));
+    }
+    let st = s
+        .docs
+        .iter()
+        .find(|d| d.path.as_deref() == Some(name))
+        .or_else(|| s.docs.iter().find(|d| d.path.is_none() && d.title == file_name(name)))
+        .ok_or_else(|| bad(CMD, format!("no open drawing is {}", file_name(name))))?;
+    if st.doc.refedit.is_some() {
+        return Err(bad(CMD, "A block reference is being edited in place: finish with REFCLOSE (Save or Discard) before saving."));
+    }
+    let hooks = io().ok_or_else(|| bad(CMD, "file formats are not available in this build"))?;
+    write_drawing(hooks, st.drawing(), CMD, name, &save_to_options(st, name))
 }
 
 /// Save to `path` with `opts`. A drawing file then keeps the version and binary choice: the

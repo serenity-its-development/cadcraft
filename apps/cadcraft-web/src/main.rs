@@ -13,6 +13,8 @@
 #[cfg(target_arch = "wasm32")]
 pub mod download;
 #[cfg(any(target_arch = "wasm32", test))]
+mod export;
+#[cfg(any(target_arch = "wasm32", test))]
 mod handoff;
 #[cfg(target_arch = "wasm32")]
 mod host;
@@ -54,6 +56,22 @@ mod web {
                 app.set_status(notice);
             }
         }
+
+        /// The host's asks for the bytes: the drawing as it stands, as Save writes the host's file, with nothing committed or
+        /// marked saved.
+        fn answer_exports(&self, app: &CadApp) {
+            for request in self.bridge.take_exports() {
+                let name = self.bridge.opened_name();
+                match cadcraft_engine::cmd::file::host_export_bytes(&app.session, &name) {
+                    Ok(bytes) => {
+                        if let Err(e) = self.bridge.post_export(&bytes, request) {
+                            log::warn!("CAD: the export could not be handed to the host: {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("CAD: {name} was not exported: {e}"),
+                }
+            }
+        }
     }
 
     fn shown(app: &CadApp) -> Option<u64> {
@@ -75,6 +93,7 @@ mod web {
             self.0.system_animations = self.3.as_ref().map(|reduced| !reduced.matches());
             if let Some(h) = self.2.as_ref() {
                 h.run_commands(&mut self.0);
+                h.answer_exports(&self.0);
             }
             self.0.logic(ctx);
             let drawing = self.0.session.state().ok();
